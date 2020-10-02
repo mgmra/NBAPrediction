@@ -15,13 +15,21 @@ for file in files:
     df['Opponent'] = df['Match Up'].str[-3:]
     teams_sorted = ['_'.join(sorted(t)) + '_' for t in list(df[['Team', 'Opponent']].to_records(index=False))]
     df['Match_id'] = teams_sorted + df['Game Date']
+    df['Match_Team_id'] = df['Team'] + df['Match_id']
     df_tidy = pd.melt(df, id_vars=['Team', 'Match_id', 'Game Date', 'Opponent', 'W/L', 'Match Up', 'season'])        
     dfs.append(df)
     dfs_tidy.append(df_tidy)
 
 main_df_tidy = pd.concat(dfs_tidy)
 
-main_df_tidy.to_csv("Output/NBAPredictMainDFTidy.csv")
+merged_df = dfs[0].copy()
+for i in range(1, len(dfs)-1):
+    merged_df = merged_df.join(dfs[i], on=['Match_Team_id'], how='inner')
+    
+
+
+
+#main_df_tidy.to_csv("Output/NBAPredictMainDFTidy.csv")
 
 #test_df = dfs[0] 
 
