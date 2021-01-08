@@ -5,7 +5,7 @@ from functools import reduce
 #%% wgranie danych, stworzenie tidy df do analiz zmiennych, oczyszczenie danych
 pd.set_option('display.max_columns', 500)
 
-files = glob.glob("Data\*.csv")
+files = glob.glob("Data/raw/*.csv")
 
 #Wgranie i oczyszczenie danych, zduplikowane kolumny, indeksy
 dfs = []
@@ -141,6 +141,17 @@ df_team = reduce(lambda left,right: pd.merge(left,right, left_index=True, right_
 #Last game result should be found based on rivalry - alphabetical concat of team names (already used for building IDs)
 df_team.reset_index(level=['Game Date','Won_Result'], inplace=True)
 df_team['Last_Game_Res'] = df_team.groupby(level=['Rivalry', 'Team'])['Won_Result'].shift(1)
+
+#Calculation of Team's Won% in Season
+df_team['Won_Result_NUM'] = df_team['Won_Result'].astype(int)
+df_team['Number_Won_Matches'] = df_team.sort_index(level=['Game Number']).groupby(level=['Team', 'season'])['Won_Result_NUM'].cumsum().shift(1)
+df_team['Won%'] = df_team['Number_Won_Matches']/df_team.reset_index(level=['Game Number'])['Game Number']                                                                                                                
+df_team.drop(['Won_Result_NUM', 'Number_Won_Matches'], axis='columns', inplace=True)
+
+#Calculation of teams ranking 
+df_team['Ranking'] = df_team.sort_values(by=['Won%'], ascending=False).groupby(level=['season', 'Game Number'])['Won%'].rank(ascending=False, method = 'max')
+
+#Setting Indices to avoid subtraction
 df_team.set_index(['Last_Game_Res', 'Won_Result'], append=True, inplace=True)
 
 #Calculate Rest_Days - number of days since teams last game - currently grouped by season, maybe should not
@@ -181,8 +192,8 @@ print("--- %s seconds ---" % (time.time() - PRF_start_time))
 
 #%%zapis pliku csv
 #save file for further analysis, e.g. Tableau
-df_team_strct.to_csv('Output/df_ml.csv')
-df_team_strct.to_hdf('Output/ml_hdf.h5', key='match')
+df_team_strct.to_csv('Data/preprocessed/df_ml.csv')
+df_team_strct.to_hdf('Data/preprocessed/df_ml_hdf.h5', key='match')
 
 #DataFrame for Feature Selection and ML processing
 #df_ml.to_csv('Output/df_ml.csv')

@@ -6,7 +6,7 @@ Created on Wed Nov  4 00:05:47 2020
 """
 #%% imports
 import pandas as pd
-import seaborn as sns
+import time
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
@@ -20,73 +20,9 @@ from sklearn.model_selection import cross_val_score
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import classification_report
 import statsmodels.api as sm 
-#%% data reading 
-#link: https://towardsdatascience.com/the-art-of-finding-the-best-features-for-machine-learning-a9074e2ca60d
-#df = pd.read_csv('Output/df_ml.csv')
-df = pd.read_hdf('Output/ml_hdf.h5', key='match')
-# use the pands .corr() function to compute pairwise correlations for the dataframe
-df.dropna(inplace=True)
-
-#SAMPLING HERE to reduce computation time
-df = df.sample(n=500)
-
-target = "PTS_Result"
-corr = df.corr()
-corr[target] = abs(corr[target])
-corr = corr.sort_values(target, ascending=False)
-
-#prepare lower trainagular matrix (with deleted diagonal)
-low_tri_no_diag = np.tril(np.ones(corr.shape).astype(np.bool), k=-1)
-corr = corr.where(low_tri_no_diag)
-#drop tagret variable form rows and columns
-corr = corr.drop(corr.columns[0], axis=1).drop(corr.index[0], axis=0)
-
-corr['MaxCorr'] = corr.abs().max(axis = 1)
-
-
-'''
-return Index (or MultiIndex) of dataframe containing features with highest correlation to target variable
-and correlation with other features lower than threshold set
-'''
-def preselect_non_redundant_features(df, target, corr_threshold):
-    corr = df.corr()
-    corr[target] = abs(corr[target])
-    corr = corr.sort_values(target, ascending=False)
-
-    #prepare lower trainagular matrix (with deleted diagonal)
-    low_tri_no_diag = np.tril(np.ones(corr.shape).astype(np.bool), k=-1)
-    corr = corr.where(low_tri_no_diag)
-    #drop tagret variable form rows and columns
-    corr = corr.drop(corr.columns[0], axis=1).drop(corr.index[0], axis=0)
-
-    corr['MaxCorr'] = corr.abs().max(axis = 1)
-
-    pre_selected_features = corr[corr['MaxCorr'] < corr_threshold].index 
-    return pre_selected_features
-    
-#a03 = preselect_non_redundant_features(df, 'PTS_Result', 0.3)
-#a05 = preselect_non_redundant_features(df, 'PTS_Result', 0.5)
-a = preselect_non_redundant_features(df, 'PTS_Result', 0.5)
-#a07 = preselect_non_redundant_features(df, 'PTS_Result', 0.7)
-
-#pick pre-selected columns
-df = df.loc[:,a]
-
-
-y = df.reset_index().dropna()['Won_Result'].values
-
-X_train = df[~df.index.isin(['2019-20'], level = 'season')]
-y_train = df[~df.index.isin(['2019-20'], level = 'season')].reset_index().dropna()['Won_Result'].values
-
-X_test = df[df.index.isin(['2019-20'], level = 'season')]
-y_test = df[df.index.isin(['2019-20'], level = 'season')].reset_index().dropna()['Won_Result'].values                        
-
-
-
-
-
-
-
+from sklearn.svm import SVC
+from sklearn.model_selection import StratifiedKFold
+from sklearn.feature_selection import RFECV
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.feature_selection import f_classif
 from sklearn.feature_selection import chi2
@@ -107,21 +43,64 @@ from sklearn.metrics import accuracy_score
 from sklearn.decomposition import PCA
 import pprint as pp
 import itertools
+from collections import ChainMap
+from sklearn.model_selection import cross_validate
+import datetime
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from sklearn.neural_network import MLPClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.gaussian_process import GaussianProcessClassifier
+from sklearn.gaussian_process.kernels import RBF
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+import random
 
+'''
 
-#pp.pprint(sorted(classifier.get_params().keys()))
+return Index (or MultiIndex) of dataframe containing features with highest correlation to target variable
+and correlation with other features lower than threshold set
+'''
 
+def seed_everything(seed=21):
+    """"
+    Seed everything.
+    """   
+    random.seed(seed)
+    np.random.seed(seed)
 
-#https://www.tomasbeuzen.com/post/scikit-learn-gridsearch-pipelines/
+def preselect_non_redundant_features(df, target, corr_threshold):
+    corr = df.corr()
+    corr[target] = abs(corr[target])
+    corr = corr.sort_values(target, ascending=False)
 
-def create_pipe_grid(func_parameters):
+    #prepare lower trainagular matrix (with deleted diagonal)
+    low_tri_no_diag = np.tril(np.ones(corr.shape).astype(np.bool), k=-1)
+    corr = corr.where(low_tri_no_diag)
+    #drop tagret variable form rows and columns
+    corr = corr.drop(corr.columns[0], axis=1).drop(corr.index[0], axis=0)
+
+    corr['MaxCorr'] = corr.abs().max(axis = 1)
+
+    pre_selected_features = corr[corr['MaxCorr'] < corr_threshold].index 
+    return pre_selected_features
+    
+def create_pipe_grid(func_parameters, indicator):
     '''
     Parameters
     ----------
-    func_parameters : dict
+    func_parameters : dict, string
         dictionary in form of: 
         {sklearn method : {param_name1 : [param_val1, param_val2..], param_name2: [param_val1, param_val2], 'passthrough':True}}
     'passthrough' key is optional. If its set to True 'passthrough' for sklearn Pipeline will be added to specific step
+    Indicator is a string tied to parameters to indicate name of the step, e.g. when multiple classifiers are tested 'clf'
+    is a good indicator, 'selector' for selector tests.
     Returns
     multi_grid: list
         List of arguments (invoked sklearn methods with specific parameters) to be searched through by pipeline
@@ -129,6 +108,7 @@ def create_pipe_grid(func_parameters):
     '''
     
     multi_grid = []
+    grid_step_dict = {}
     for func, parameters_dict in func_parameters.items():
             
         main_list=[]
@@ -163,168 +143,215 @@ def create_pipe_grid(func_parameters):
         
         multi_grid.extend(grid)
         
-    return(multi_grid)
+        grid_step_dict[indicator] = multi_grid
+        
+    return(grid_step_dict)
 
-scaler = [StandardScaler(), 'passthrough']
+def cluster_data(X_train, y_train, X_test, y_test, k=2, pca_components=3):
+    
+    X_train_sc, X_test_sc = StandardScaler().fit_transform(X_train), StandardScaler().fit_transform(X_test)
+    
+    pca = PCA(n_components=pca_components)
+    pca_comps_train = pca.fit_transform(X_train_sc)
+    pca_comps_test = pca.fit_transform(X_test_sc)
+    
+    pca_comps_train_df = pd.DataFrame(pca_comps_train)
+    pca_comps_test_df = pd.DataFrame(pca_comps_test)
+    
+    kmeans = KMeans(n_clusters=k)
+    kmeans.fit(pca_comps_train_df)
+    cluster_labels_train = kmeans.predict(pca_comps_train_df)
+    cluster_labels_test = kmeans.predict(pca_comps_test_df)
+    
+    cluster_data = {}
+    for k in range(k):
+        X_train_k = X_train[cluster_labels_train == k]
+        y_train_k = y_train[cluster_labels_train == k]
+        X_test_k = X_test[cluster_labels_test == k]
+        y_test_k = y_test[cluster_labels_test == k]
+        
+        data_k = [X_train_k, y_train_k, X_test_k, y_test_k]
+        cluster_data[k] = data_k
+    
+    return cluster_data  
 
-pca_parameters = {PCA : {'n_components':[5], 'passthrough':True}}
-pca = create_pipe_grid(pca_parameters)
+def get_non_redundant_df(df, target, corr_threshold):
+    features = preselect_non_redundant_features(df, target, corr_threshold)
+    output = df.loc[:,features]
+    return output
 
-selector_parameters = {SelectKBest: {'k':[5,10,15,25], 'score_func':[f_classif, mutual_info_classif], 'passthrough':True}}
+def feature_based_train_test_split(df, target, splitting_feature, test_split_value, 
+                                   splitting_feature_as_index=True):
+    if splitting_feature_as_index == True:
+        X_train = df[~df.index.isin([test_split_value], level = splitting_feature)]
+        X_test = df[df.index.isin([test_split_value], level = splitting_feature)]
+                                  
+        y_train = df[~df.index.isin([test_split_value], level = splitting_feature)].reset_index()[target].values
+        y_test = df[df.index.isin([test_split_value], level = splitting_feature)].reset_index()[target].values
+                   
+    else:
+        X_train = df[~df[splitting_feature]==test_split_value]
+        X_test = df[df[splitting_feature]==test_split_value]
+        
+        y_train = df[~df[splitting_feature]==test_split_value].reset_index()[target].values
+        y_test = df[df[splitting_feature]==test_split_value].reset_index()[target].values
+        
+    return X_train, y_train, X_test, y_test
 
-selector = create_pipe_grid(selector_parameters)
+def pipeline_search_report(data_list, data_desc, *kwargs):
+    
+    steps_lists = [list(arg.values())[0] for arg in kwargs]
+    step_names = [list(arg.keys())[0] for arg in kwargs] 
+    results = []
+    
+    X_train = data_list[0]
+    y_train = data_list[1]
+    X_test = data_list[2]
+    y_test = data_list[3]
+    
+    for pipe_steps in itertools.product(*steps_lists):
+        
+        time_start = time.time()
+        steps = list(zip(step_names, pipe_steps)) 
+        pipe = Pipeline(steps)
+        pipe.fit(X_train, y_train)
+        cv = cross_validate(pipe, X_train, y_train, cv=5)
+        time_end = time.time()
+        model_duration = time_end - time_start
+        
+        cv_scores = [np.mean(cv[key]) for key in cv.keys()]
+        test_score = pipe.score(X_test, y_test)
+        train_size = X_train.shape
+        test_size = X_test.shape
+        timestamp = datetime.datetime.now()
+        if pipe['selector'] != 'passthrough':
+            mask = pipe['selector'].get_support()
+            selected_features = X_train.columns[mask]
+        else:
+            selected_features = X_train.columns
+        
+        results.append([timestamp, model_duration, data_desc, selected_features, *pipe_steps, *cv_scores, test_score, train_size, test_size, pipe_steps])
+        
+            
+    cv_score_types = ['cv_' + k for k in cv.keys()]
+    col_names = ['Timestamp', 'Duration', 'Data_description', 'Selected_features', *step_names, *cv_score_types, 'Test_score', 'Train_size', 'Test_size', 'PipeSteps_Tech']
+    
+    result_df = pd.DataFrame(results, columns=col_names)
+    result_df = result_df.sort_values(by=['Test_score'], ascending=False)
+    
+    return result_df
+ 
+def cluster_pipeline_search_report(clustered_data_dict, data_desc, *kwargs):
+    
+    #steps_lists = [list(arg.values())[0] for arg in kwargs]
+    steps_lists = [list(arg.values())[0] for arg in kwargs]
+    step_names = [list(arg.keys())[0] for arg in kwargs] 
+    results = []
+    for k in clustered_data_dict.keys():
+        X_train = clustered_data_dict[k][0]
+        y_train = clustered_data_dict[k][1]
+        X_test = clustered_data_dict[k][2]
+        y_test = clustered_data_dict[k][3]
+        
+        for pipe_steps in itertools.product(*steps_lists):
+            time_start = time.time()
+            steps = list(zip(step_names, pipe_steps)) 
+            pipe = Pipeline(steps)
+            pipe.fit(X_train, y_train)
+            cv = cross_validate(pipe, X_train, y_train, cv=5)
+            time_end = time.time()
+            model_duration = time_end - time_start
+        
+            cv_scores = [np.mean(cv[key]) for key in cv.keys()]
+            test_score = pipe.score(X_test, y_test)
+            train_size = X_train.shape
+            test_size = X_test.shape
+            timestamp = datetime.datetime.now()
+            if pipe['selector'] != 'passthrough':
+                mask = pipe['selector'].get_support()
+                selected_features = X_train.columns[mask]
+            else:
+                selected_features = X_train.columns
+        
+            results.append([timestamp, model_duration, data_desc, k, selected_features, *pipe_steps, *cv_scores, test_score, train_size, test_size, pipe_steps])
+
+    cv_score_types = ['cv_' + key for key in cv.keys()]
+    col_names = ['Timestamp', 'Duration', 'Data_description', 'Cluster', 'Selected_features', *step_names, *cv_score_types, 'Test_score', 'Train_size', 'Test_size', 'PipeSteps_Tech']
+    
+    result_df = pd.DataFrame(results, columns=col_names)
+    result_df = result_df.sort_values(by=['Test_score'], ascending=False)
+    
+    return result_df
+
+def write_report(df, description, filepath='Output/Reports/'):
+    max_test_score = str(np.round(df['Test_score'].max(),3))
+    max_timestamp = str(df['Timestamp'].max().date().strftime("%d%m%Y"))
+    path_string = filepath + "PipeReport_" + description + "_" + max_test_score + "_" + max_timestamp + '_' + '.csv'
+    df.to_csv(path_string)
+    return path_string
 
 
-clf_parameters = {LogisticRegression:{'C':[0.1, 1, 10], 'penalty':['none', 'l2']},
-              RandomForestClassifier:{'max_depth':[2,5,10,None]},
-              SVC:{'C':[0.1,1,10]},
+seed_everything(42)
+
+###PIPELINE MODELS, PARAMETERS
+scaler_parameters = [StandardScaler(), MinMaxScaler(), 'passthrough']
+scaler = {'scaler':scaler_parameters}
+
+pca_parameters = {PCA : {'n_components':[3], 'passthrough':True}}
+pca = create_pipe_grid(pca_parameters, 'PCA')
+
+
+selector_parameters = {SelectKBest: {'k':[5,10], 'score_func':[f_classif], 'passthrough':False}}
+selector = create_pipe_grid(selector_parameters, 'selector')
+
+
+clf_parameters = {KNeighborsClassifier:{'n_neighbors':[3,5]},
+              LogisticRegression:{'C':[0.1, 1, 5], 'penalty':['none', 'l2']},
+              RandomForestClassifier:{'max_depth':[2,5,10]},
+              SVC:{'C':[0.1,1]},
+              DecisionTreeClassifier:{'max_depth':[5,10,25]},
+              #MLPClassifier:{'alpha':[1], 'max_iter':[1000]},
+              GaussianNB:{'var_smoothing':[0.000000001]},
               AdaBoostClassifier:{'n_estimators':[20,50,100]},
-              GaussianProcessClassifier:{'max_iter_predict':[50,100]}
+              GaussianProcessClassifier:{'max_iter_predict':[50,100]},
+              QuadraticDiscriminantAnalysis:{'tol':[0.0001,0.001]}
               }
 
-clf = create_pipe_grid(clf_parameters)
+#clf_parameters = {LogisticRegression:{'C':[1, 10], 'penalty':['l2']}}
+
+clf = create_pipe_grid(clf_parameters, 'clf')
 
 
 
-''' ZALĄŻEK NOWEJ FUNKCJI'''
+###Read Data
+df = pd.read_hdf('Data/preprocessed/df_ml_hdf.h5', key='match')
 
-results = []
-for scaler_ in scaler :
-    for selector_ in selector:
-            for clf_ in clf:
-                pipe = Pipeline(steps = [('scaler', scaler_), ('selector', selector_), ('clf', clf_)]) 
-                pipe.fit(X_train, y_train)
-                score = pipe.score(X_test, y_test)
-
-                results.append([scaler_, selector_, clf_, score])
-
-
-
-
-
-''' Function composing pipeline for separate dicts containing parameters'''
-
-
-
-    
-"""
-search_space = [
-                {'classifier': [LogisticRegression(solver='lbfgs')],
-                 'classifier__C': [0.01, 0.1, 1.0]},
-                {'classifier': [RandomForestClassifier(n_estimators=100)],
-                 'classifier__max_depth': [5, 10, None]},
-                {'classifier': [KNeighborsClassifier()],
-                 'classifier__n_neighbors': [3, 7, 11],
-                 'classifier__weights': ['uniform', 'distance']}]
-"""
-
-
-estimators = [('selector', SelectKBest()), ('scaler', StandardScaler()), ('clf', SVC())]
-pipe = Pipeline(estimators)
-
-
-grid_search = GridSearchCV(pipe, param_grid, verbose=5)
-
-
-grid_search.fit(X_train, y_train)
-y_pred = grid_search.predict(X_test)
-
-cv_results = grid_search.cv_results_
-cv_results_df = pd.DataFrame(cv_results).sort_values(by=['rank_test_score'])
-
-
-test_pipe = Pipeline(
-                     [('selector', selector),
-                     ('scaler', cv_results_df['param_scaler'].iloc[1]),
-                     ('clf', cv_results_df['param_clf'].iloc[1])]
-                     )
-test_pipe.fit(X_train, y_train)
-y_pred_test = test_pipe.predict(X_test)
-
-acc = accuracy_score(y_test, y_pred_test)
-print(acc)
-
-print(confusion_matrix(y_test, y_pred_test))
-print(classification_report(y_test, y_pred_test))
-
-
-#Ridge Regression
-#For classification: chi2, f_classif, mutual_info_classif
-
-print(confusion_matrix(y_test, y_pred))
-print(classification_report(y_test, y_pred))
-
-print(grid_search.best_params_)
-
-
-# Import necessary modules
-from sklearn.metrics import roc_curve
-
-# Compute predicted probabilities: y_pred_prob
-y_pred_prob = grid_search.predict_proba(X_test)[:,1]
-
-# Generate ROC curve values: fpr, tpr, thresholds
-fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob)
-
-# Plot ROC curve
-plt.plot([0, 1], [0, 1], 'k--')
-plt.plot(fpr, tpr)
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('ROC Curve')
-plt.show()
-
-
-
-
-####autoML
-
-#df = pd.read_csv('Output/df_ml.csv')
-df = pd.read_hdf('Output/ml_hdf.h5', key='match')
 # use the pands .corr() function to compute pairwise correlations for the dataframe
 df.dropna(inplace=True)
 
-a = preselect_non_redundant_features(df, 'PTS_Result', 0.7)
+#df = get_non_redundant_df(df, 'PTS_Result', 0.5) 
+       
+#SAMPLING HERE to reduce computation time
+#df = df.sample(n=1000)
 
-df = df.loc[:,a]
-y = df.reset_index().dropna()['Won_Result'].values
-
-X_train = df[~df.index.isin(['2019-20'], level = 'season')]
-y_train = df[~df.index.isin(['2019-20'], level = 'season')].reset_index().dropna()['Won_Result'].values
-
-X_test = df[df.index.isin(['2019-20'], level = 'season')]
-y_test = df[df.index.isin(['2019-20'], level = 'season')].reset_index().dropna()['Won_Result'].values                        
+X_train, y_train, X_test, y_test = feature_based_train_test_split(df, 'Won_Result', 'season', '2019-20') 
 
 
-# example of tpot for a classification dataset
-from sklearn.datasets import make_classification
-from sklearn.model_selection import RepeatedStratifiedKFold
-from tpot import TPOTClassifier
-# define dataset
+#CLUSTERING THE DATA
+clustered_data = cluster_data(X_train, y_train, X_test, y_test)
 
-# define model evaluation
-cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=1)
-# define search
-model = TPOTClassifier(generations=5, population_size=50, cv=cv, scoring='accuracy', verbosity=2, random_state=1, n_jobs=-1)
-# perform the search
-model.fit(X_train, y_train)
-# export the best model
-acc = model.score(X_test, y_test)
-print(acc)
+pipe_report = pipeline_search_report([X_train, y_train, X_test, y_test], scaler, selector, clf)
+write_report(pipe_report, 'Full_Seed_21')
 
 
+clustered_result_pipe_search = cluster_pipeline_search_report(clustered_data,'Test', scaler, selector, clf)
+write_report(clustered_result_pipe_search, 'Clusterized_Seed_21')
 
 
-
-
-
-
-
-
-
-
-
-
-
+#data_description = 'TEST_all'
+#filepath='Output/Reports/'
+#max_test_score = str(np.round(result_df['Test_score'].max(),2))
+#max_timestamp = str(result_df['Timestamp'].max().date().strftime("%d%m%Y"))
+#result_df.to_csv(filepath + "PipeReport_Clustered_"+ max_test_score + "_" + max_timestamp + '_' + '.csv')
 
 
